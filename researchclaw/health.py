@@ -161,7 +161,7 @@ def _is_timeout(exc: BaseException) -> bool:
     return isinstance(reason, (TimeoutError, socket.timeout))
 
 
-def check_llm_connectivity(base_url: str) -> CheckResult:
+def check_llm_connectivity(base_url: str, api_key: str = "") -> CheckResult:
     if not base_url.strip():
         return CheckResult(
             name="llm_connectivity",
@@ -171,7 +171,10 @@ def check_llm_connectivity(base_url: str) -> CheckResult:
         )
 
     url = _models_url(base_url)
-    req = urllib.request.Request(url, method="HEAD")
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    req = urllib.request.Request(url, method="HEAD", headers=headers)
 
     try:
         with urllib.request.urlopen(req, timeout=5):
@@ -592,7 +595,7 @@ def run_doctor(config_path: str | Path) -> DoctorReport:
     if provider == "acp":
         checks.append(check_acp_agent(acp_agent_command))
     else:
-        checks.append(check_llm_connectivity(base_url))
+        checks.append(check_llm_connectivity(base_url, api_key))
         checks.append(check_api_key_valid(base_url, api_key))
         checks.append(check_model_chain(base_url, api_key, model, fallback_models))
     checks.append(check_sandbox_python(sandbox_python_path))

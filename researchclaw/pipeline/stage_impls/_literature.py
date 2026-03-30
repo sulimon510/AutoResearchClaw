@@ -628,9 +628,37 @@ def _execute_literature_screen(
     # If pre-filter dropped everything, fall back to original (safety valve)
     if not filtered_rows:
         filtered_rows = _parse_jsonl_rows(candidates_text)
-    # Rebuild candidates_text from filtered rows
+    # Sort by citation count (descending) and cap to avoid context overflow
+    _MAX_SCREEN_CANDIDATES = 200
+    filtered_rows.sort(
+        key=lambda r: int(r.get("citation_count", 0) or 0), reverse=True
+    )
+    if len(filtered_rows) > _MAX_SCREEN_CANDIDATES:
+        logger.info(
+            "Capping candidates from %d to %d for LLM screening",
+            len(filtered_rows),
+            _MAX_SCREEN_CANDIDATES,
+        )
+        filtered_rows = filtered_rows[:_MAX_SCREEN_CANDIDATES]
+
+    # Slim each candidate to essential fields to reduce token count
+    _SCREEN_FIELDS = {
+        "paper_id", "title", "year", "abstract", "venue",
+        "citation_count", "arxiv_id", "url", "source", "keyword_overlap",
+    }
+    slim_rows = []
+    for row in filtered_rows:
+        slim = {k: v for k, v in row.items() if k in _SCREEN_FIELDS}
+        authors = row.get("authors", [])
+        if isinstance(authors, list):
+            slim["authors"] = [
+                a.get("name", a) if isinstance(a, dict) else a
+                for a in authors[:5]
+            ]
+        slim_rows.append(slim)
+
     candidates_text = "\n".join(
-        json.dumps(r, ensure_ascii=False) for r in filtered_rows
+        json.dumps(r, ensure_ascii=False) for r in slim_rows
     )
     logger.info(
         "Domain pre-filter: kept %d, dropped %d (keywords: %s)",

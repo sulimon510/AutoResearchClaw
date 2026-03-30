@@ -151,7 +151,7 @@ def _execute_code_generation(
         _net_policy = (
             config.experiment.docker.network_policy
             if config.experiment.mode == "docker"
-            else "none"  # sandbox mode has no network
+            else "full"  # sandbox inherits parent env (incl. API keys)
         )
         if _net_policy == "none":
             # Network disabled: inject strict offline-only guidance
@@ -232,6 +232,19 @@ def _execute_code_generation(
     topic_lower = config.research.topic.lower()
     is_llm_topic = any(kw in topic_lower for kw in _llm_keywords)
 
+    # --- LLM prompting/evaluation topics that need API calls ---
+    _llm_prompting_keywords = (
+        "prompt-based", "prompting strateg", "hallucination reduction",
+        "hallucination rate", "truthfulqa", "factuality metric",
+        "prompt engineer", "chain-of-thought", "few-shot", "zero-shot",
+        "in-context learning", "prompt template", "system prompt",
+        "jailbreak", "red team", "prompt injection", "prompt tuning",
+        "gpt-", "claude", "chatgpt", "openai api",
+    )
+    is_llm_prompting_topic = any(
+        kw in topic_lower for kw in _llm_prompting_keywords
+    )
+
     # --- I-08: RL topic detection and step guidance ---
     _rl_keywords = (
         "reinforcement learning", "policy gradient", "ppo", "sac", "td3",
@@ -267,10 +280,6 @@ def _execute_code_generation(
             extra_guidance += _pm.block("llm_training_guidance")
         except Exception:  # noqa: BLE001
             pass
-        try:
-            extra_guidance += _pm.block("llm_eval_guidance")
-        except Exception:  # noqa: BLE001
-            pass
         # P2.3: Warn if time budget is too short for LLM training
         if time_budget_sec < 3600:
             extra_guidance += (
@@ -285,6 +294,52 @@ def _execute_code_generation(
                 f"- Limit max_seq_length to 512-1024\n"
                 f"- If possible, use a smaller model (<=7B parameters)\n"
             )
+
+    if is_llm_topic or is_llm_prompting_topic:
+        try:
+            extra_guidance += _pm.block("llm_eval_guidance")
+        except Exception:  # noqa: BLE001
+            pass
+
+    if is_llm_prompting_topic:
+        _api_key_env = config.llm.api_key_env or "OPENAI_API_KEY"
+        _primary_model = config.llm.primary_model
+        extra_guidance += (
+            "\n## LLM API ACCESS — CRITICAL FOR THIS TOPIC\n"
+            "This experiment evaluates LLM prompting strategies. You MUST call a "
+            "real LLM API to generate responses — do NOT simulate or approximate "
+            "LLM behavior with heuristic string matching.\n\n"
+            "### API Setup\n"
+            f"- The environment variable `{_api_key_env}` is set and available.\n"
+            f"- Use model: `{_primary_model}`\n"
+            "- Use the `openai` Python package (pre-installed).\n\n"
+            "### Example code pattern:\n"
+            "```python\n"
+            "import os\n"
+            "from openai import OpenAI\n\n"
+            f"client = OpenAI(api_key=os.environ['{_api_key_env}'])\n\n"
+            "def call_llm(system_prompt: str, user_prompt: str) -> str:\n"
+            "    response = client.chat.completions.create(\n"
+            f"        model='{_primary_model}',\n"
+            "        messages=[\n"
+            "            {'role': 'system', 'content': system_prompt},\n"
+            "            {'role': 'user', 'content': user_prompt},\n"
+            "        ],\n"
+            "        temperature=0.0,\n"
+            "        max_tokens=512,\n"
+            "    )\n"
+            "    return response.choices[0].message.content\n"
+            "```\n\n"
+            "### Requirements:\n"
+            "- Each prompt strategy MUST be implemented as a different system prompt "
+            "sent to the LLM API.\n"
+            "- The SAME questions must be sent to the LLM under EACH prompt strategy.\n"
+            "- Compare the LLM's actual responses against ground truth.\n"
+            "- Do NOT use local heuristic text processing as a substitute for LLM calls.\n"
+            "- Rate-limit calls with a small delay (e.g. time.sleep(0.5)) between requests.\n"
+            "- To stay within time budget, subsample the evaluation set "
+            "(e.g. 50-100 questions).\n"
+        )
 
     # --- Domain-specific guidance injection for non-ML domains ---
     try:
@@ -1327,7 +1382,7 @@ Multi-file experiment project with {len(files)} file(s): {file_list}
 ## Constraints
 - Time budget per run: {config.experiment.time_budget_sec}s
 - Max iterations: {config.experiment.max_iterations}
-- Self-contained execution (no external data, no network)
+- Sandbox execution (API keys available via environment variables)
 - Validated: {main_validation.summary()}
 
 ## Generated

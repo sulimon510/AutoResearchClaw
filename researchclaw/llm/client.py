@@ -40,6 +40,7 @@ _NO_TEMPERATURE_MODELS = frozenset(
         "o3",
         "o3-mini",
         "o4-mini",
+        "gpt-5.4-pro",
     }
 )
 
@@ -78,7 +79,7 @@ class LLMConfig:
     temperature: float = 0.7
     max_retries: int = 3
     retry_base_delay: float = 2.0
-    timeout_sec: int = 300
+    timeout_sec: int = 600
     user_agent: str = _DEFAULT_USER_AGENT
     # MetaClaw bridge: extra headers for proxy requests
     extra_headers: dict[str, str] = field(default_factory=dict)
@@ -308,6 +309,7 @@ class LLMClient:
                 # (Azure OpenAI) return 400 during overload / rate-limit.
                 # Retry if the body hints at a transient issue.
                 if status == 400:
+                    logger.warning("HTTP 400 from %s: %s", model, body[:500])
                     _transient_400 = any(
                         kw in body.lower()
                         for kw in (
@@ -395,8 +397,11 @@ class LLMClient:
 
                 # Use correct token parameter based on model
                 if any(model.startswith(prefix) for prefix in _NEW_PARAM_MODELS):
-                    reasoning_min = 32768
-                    body["max_completion_tokens"] = max(max_tokens, reasoning_min)
+                    if any(model.startswith(p) for p in _NO_TEMPERATURE_MODELS):
+                        reasoning_min = 32768
+                        body["max_completion_tokens"] = max(max_tokens, reasoning_min)
+                    else:
+                        body["max_completion_tokens"] = max_tokens
                 else:
                     body["max_tokens"] = max_tokens
 
@@ -488,7 +493,13 @@ class LLMClient:
             )
 
         if self._normalize_wire_api(self.config.wire_api) == "responses":
-            return self._parse_responses_response(data, model)
+            result = self._parse_responses_response(data, model)
+            if not result.content.strip():
+                logger.warning(
+                    "Responses API returned empty content. Raw output: %s",
+                    json.dumps(data.get("output", []), indent=2)[:2000],
+                )
+            return result
         return self._parse_chat_completions_response(data, model)
 
     def _build_responses_body(
@@ -504,7 +515,11 @@ class LLMClient:
         }
         if self._supports_temperature(model):
             body["temperature"] = temperature
-        body["max_output_tokens"] = max_tokens
+        if any(model.startswith(prefix) for prefix in _NEW_PARAM_MODELS):
+            body["max_output_tokens"] = max(max_tokens, 16384)
+            body["reasoning"] = {"effort": "medium"}
+        else:
+            body["max_output_tokens"] = max_tokens
         return body
 
     def _messages_to_responses_input(
